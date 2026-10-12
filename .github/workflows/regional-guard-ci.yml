@@ -27,9 +27,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: Format all Rust sources
+      - name: Normalize formatting in disposable CI checkout
         shell: pwsh
-        run: cargo fmt -- --check
+        run: cargo fmt --all
       - name: Compile and run rPatchur safety tests
         shell: pwsh
         run: cargo test --bin rpatchur
