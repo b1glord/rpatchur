@@ -163,7 +163,23 @@ fn spawn_patching_thread(
             error!("{}", err_msg);
             dispatch_patching_status(&webview_handle, PatchingStatus::Error(err_msg));
         };
-        let patch_list_url = Url::parse(config.web.plist_url.as_str()).unwrap();
+        // Fail before the first network request if this deployment opted into
+        // regional protection and its actual client EXE is not certified.
+        let guard = match RegionGuard::load(&config) {
+            Ok(g) => g,
+            Err(e) => {
+                report_error(format!("Regional patch guard blocked update: {}", e));
+                return;
+            }
+        };
+        let patch_list_url = match Url::parse(config.web.plist_url.as_str()) {
+            Ok(u) => u,
+            Err(e) => { report_error(format!("Invalid plist URL: {}", e)); return; }
+        };
+        if guard.is_some() && patch_list_url.scheme() != "https" {
+            report_error("Guarded patch lists require HTTPS.".to_string());
+            return;
+        }
         let mut patch_list = match fetch_patch_list(patch_list_url) {
             Err(e) => {
                 report_error(format!("Failed to retrieve the patch list: {}.", e));
@@ -172,10 +188,20 @@ fn spawn_patching_thread(
             Ok(v) => v,
         };
         info!("Successfully fetched patch list: {:?}", patch_list);
+        if let Some(ref approved) = guard {
+            // Check the *unfiltered* list before considering any cache state.
+            if let Err(e) = approved.validate_list(&patch_list) {
+                report_error(format!("Unapproved patch list: {}", e));
+                return;
+            }
+        }
 
         // Try to read cache
         let cache_file_path = match get_patcher_name() {
-            Some(patcher_name) => PathBuf::from(patcher_name).with_extension("dat"),
+            Some(patcher_name) => match guard.as_ref() {
+                Some(approved) => PathBuf::from(approved.cache_name(&patcher_name.to_string_lossy())),
+                None => PathBuf::from(patcher_name).with_extension("dat"),
+            },
             None => {
                 report_error("Failed to resolve patcher name.".to_string());
                 return;
@@ -194,9 +220,16 @@ fn spawn_patching_thread(
 
         // Try fetching patch files
         info!("Downloading patches... ");
-        let patch_url = Url::parse(config.web.patch_url.as_str()).unwrap();
+        let patch_url = match Url::parse(config.web.patch_url.as_str()) {
+            Ok(u) => u,
+            Err(e) => { report_error(format!("Invalid patch URL: {}", e)); return; }
+        };
+        if guard.is_some() && patch_url.scheme() != "https" {
+            report_error("Guarded patch downloads require HTTPS.".to_string());
+            return;
+        }
         let pending_patch_queue =
-            match fetch_pending_patches(patch_url, patch_list, &webview_handle) {
+            match fetch_pending_patches(patch_url, patch_list, &webview_handle, guard.as_ref()) {
                 Err(e) => {
                     report_error(format!("Failed to download patches: {}.", e));
                     return;
@@ -212,6 +245,7 @@ fn spawn_patching_thread(
             &webview_handle,
             &config,
             &cache_file_path,
+            guard.as_ref(),
         ) {
             report_error(format!("Failed to apply patches: {}.", e));
             return;
@@ -243,6 +277,7 @@ fn fetch_pending_patches(
     patch_url: Url,
     patch_list: ThorPatchList,
     webview_handle: &Handle<config::PatcherConfiguration>,
+    guard: Option<&RegionGuard>,
 ) -> Result<Vec<PendingPatch>, String> {
     let patch_count = patch_list.len();
     let mut pending_patch_queue = Vec::with_capacity(patch_count);
@@ -251,6 +286,9 @@ fn fetch_pending_patches(
         PatchingStatus::DownloadInProgress(0, patch_count),
     );
     for (patch_number, patch) in patch_list.into_iter().enumerate() {
+        if let Some(approved) = guard {
+            approved.validate_patch(patch.index, &patch.file_name)?;
+        }
         let patch_file_url = match patch_url.join(patch.file_name.as_str()) {
             Err(_) => {
                 return Err(format!(
@@ -277,6 +315,10 @@ fn fetch_pending_patches(
             }
             Ok(v) => v,
         };
+        // Verify raw downloaded bytes before *any* patch can be applied.
+        if let Some(approved) = guard {
+            approved.validate_bytes(patch.index, &patch.file_name, &mut tmp_file)?;
+        }
         // File's been downloaded, seek to start and add it to the queue
         let _offset = tmp_file.seek(SeekFrom::Start(0));
         pending_patch_queue.push(PendingPatch {
@@ -297,6 +339,7 @@ fn apply_patches<P: AsRef<Path>>(
     webview_handle: &Handle<config::PatcherConfiguration>,
     config: &PatcherConfiguration,
     cache_file_path: P,
+    guard: Option<&RegionGuard>,
 ) -> Result<(), String> {
     let current_working_dir = match env::current_dir() {
         Err(e) => {
@@ -312,8 +355,15 @@ fn apply_patches<P: AsRef<Path>>(
         &webview_handle,
         PatchingStatus::InstallationInProgress(0, patch_count),
     );
-    for (patch_number, pending_patch) in pending_patch_queue.into_iter().enumerate() {
+    for (patch_number, mut pending_patch) in pending_patch_queue.into_iter().enumerate() {
         info!("Processing {}", pending_patch.info.file_name);
+        if let Some(approved) = guard {
+            approved.validate_bytes(
+                pending_patch.info.index,
+                &pending_patch.info.file_name,
+                &mut pending_patch.local_file,
+            )?;
+        }
         let mut thor_archive = match ThorArchive::new(pending_patch.local_file) {
             Err(e) => {
                 return Err(format!(
@@ -323,6 +373,12 @@ fn apply_patches<P: AsRef<Path>>(
             }
             Ok(v) => v,
         };
+
+        if let Some(approved) = guard {
+            // The THOR parser succeeded; block unsafe archive paths before
+            // any loose-file deletion or GRF mutation is attempted.
+            approved.validate_archive(&thor_archive)?;
+        }
 
         if thor_archive.use_grf_merging() {
             // Patch GRF file
@@ -334,6 +390,9 @@ fn apply_patches<P: AsRef<Path>>(
                 }
             };
             trace!("Target GRF: {:?}", patch_target_grf_name);
+            if let Some(approved) = guard {
+                approved.validate_target(&patch_target_grf_name)?;
+            }
             let grf_patching_method = match config.patching.in_place {
                 true => GrfPatchingMethod::InPlace,
                 false => GrfPatchingMethod::OutOfPlace,
