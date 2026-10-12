@@ -30,6 +30,17 @@ jobs:
       - name: Normalize formatting in disposable CI checkout
         shell: pwsh
         run: cargo fmt --all
+      - name: Resolve fixed socket2 and update transient Cargo lockfile
+        shell: pwsh
+        run: cargo update -p socket2 --precise 0.3.19
       - name: Compile and run rPatchur safety tests
         shell: pwsh
         run: cargo test --bin rpatchur
+      - name: Upload resolved Cargo lockfile for reproducible follow-up
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpatchur-resolved-cargo-lockfile
+          path: Cargo.lock
+          if-no-files-found: warn
+          retention-days: 7
