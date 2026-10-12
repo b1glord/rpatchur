@@ -49,7 +49,19 @@ pub struct ClientConfiguration {
 #[derive(Deserialize, Clone)]
 pub struct PatchingConfiguration {
     pub in_place: bool, // In-place GRF patching
-                        // pub check_integrity: bool,
+    // The default is None, preserving original 2015 patcher operation.
+    #[serde(default)]
+    pub compatibility_guard: Option<RegionalGuardConfig>,
+}
+
+/// Optional, locally protected region/channel identity used only when enabled.
+#[derive(Deserialize, Clone)]
+pub struct RegionalGuardConfig {
+    pub profile_id: String,
+    pub region: String,
+    pub channel: String,
+    pub client_exe_sha256: String,
+    pub manifest_file: String,
 }
 
 pub fn parse_configuration<P: AsRef<Path>>(config_file_path: P) -> Option<PatcherConfiguration> {
