@@ -32,7 +32,9 @@ jobs:
         run: cargo fmt --all
       - name: Resolve fixed socket2 and update transient Cargo lockfile
         shell: pwsh
-        run: cargo update -p socket2 --precise 0.3.19
+        run: |
+          cargo update -p socket2 --precise 0.3.19
+          cargo update -p lexical-core --precise 0.7.6
       - name: Compile and run rPatchur safety tests
         shell: pwsh
         run: cargo test --bin rpatchur
