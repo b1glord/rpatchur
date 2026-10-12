@@ -298,8 +298,10 @@ fn fetch_pending_patches(
             }
             Ok(v) => v,
         };
-        let mut tmp_file = tempfile::tempfile().unwrap();
-        let mut resp = reqwest::blocking::get(patch_file_url).unwrap();
+        let mut tmp_file = tempfile::tempfile()
+            .map_err(|e| format!("Cannot create temporary patch file: {}", e))?;
+        let mut resp = reqwest::blocking::get(patch_file_url)
+            .map_err(|e| format!("Failed to download guarded patch: {}", e))?;
         if !resp.status().is_success() {
             return Err(format!(
                 "Patch file '{}' not found on the remote server.",
