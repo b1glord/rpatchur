@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod config;
+mod region_guard;
 mod grf;
 mod patching;
 mod thor;
@@ -17,6 +18,7 @@ use std::process::Command;
 use std::thread;
 
 use config::{parse_configuration, PatcherConfiguration};
+use region_guard::RegionGuard;
 use log::{error, info, trace, warn};
 use patching::{apply_patch_to_disk, apply_patch_to_grf, GrfPatchingMethod};
 use serde::{Deserialize, Serialize};
