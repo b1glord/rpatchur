@@ -44,18 +44,18 @@ impl ThorPatchInfo {
     /// Returns a PatchInfo struct in case of success.
     /// Returns None in case of failure
     fn from_string(line: &str) -> Option<ThorPatchInfo> {
-        let words: Vec<_> = line.trim().split_whitespace().collect();
-        let index_str = words.get(0)?;
-        let index = match str::parse(index_str) {
-            Ok(v) => v,
-            Err(_) => {
-                return None;
-            }
-        };
-        let file_name = words.get(1)?;
+        let trimmed = line.trim();
+        // Legacy THOR filenames may legitimately contain spaces (e.g.
+        // "skin-Phieti Renewal.thor"). Keep everything after the index.
+        let first_space = trimmed.find(char::is_whitespace)?;
+        let index = trimmed[..first_space].parse().ok()?;
+        let file_name = trimmed[first_space..].trim();
+        if file_name.is_empty() || file_name.starts_with("//") {
+            return None;
+        }
         Some(ThorPatchInfo {
             index,
-            file_name: (*file_name).to_string(),
+            file_name: file_name.to_owned(),
         })
     }
 }
@@ -524,5 +524,22 @@ mod tests {
             assert!(thor_archive.use_grf_merging());
             assert!(thor_archive.is_valid());
         }
+    }
+}
+
+
+#[cfg(test)]
+mod regional_plist_regressions {
+    use super::*;
+
+    #[test]
+    fn legacy_patch_names_keep_spaces() {
+        let list = patch_list_from_string(
+            "// legacy aliases\n22 skin-Phieti Renewal.thor\n28 translate-System.thor\n"
+        );
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].index, 22);
+        assert_eq!(list[0].file_name, "skin-Phieti Renewal.thor");
+        assert_eq!(list[1].file_name, "translate-System.thor");
     }
 }
